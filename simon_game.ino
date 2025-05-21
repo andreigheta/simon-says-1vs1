@@ -4,6 +4,8 @@
  * Two-player game where each player must repeat a sequence of LED patterns
  */
 
+#include <PinChangeInterrupt.h>
+
 #define NOTE_B0  31
 #define NOTE_C1  33
 #define NOTE_CS1 35
@@ -128,11 +130,11 @@ const int maxSequenceLength = 100;
 
 // Player 1 pins
 const int ledsPlayer1[] = {2, 3, 4, 5};
-const int buttonsPlayer1[] = {31, 33, 30, 26};
+const int buttonsPlayer1[] = {10, 11, 12, 13};
 
 // Player 2 pins
 const int ledsPlayer2[] = {6, 7, 8, 9};
-const int buttonsPlayer2[] = {38, 36, 28, 53};
+const int buttonsPlayer2[] = {51, 52, 50, 53};
 
 // PWM settings
 const int pwmFrequency = 1000;  // 1 kHz
@@ -155,6 +157,8 @@ unsigned long displayDelay = 500;    // Time each LED stays on
 unsigned long pauseDelay = 200;      // Time between LEDs in sequence
 unsigned long betweenPlayersDelay = 1000; // Time between player turns
 
+volatile int interruptButtonPressed = -1;
+
 void setup() {
   Serial.begin(9600);
   Serial.println("Simon Says Game Starting!");
@@ -166,46 +170,17 @@ void setup() {
 
     pinMode(ledsPlayer2[i], OUTPUT);
     pinMode(buttonsPlayer2[i], INPUT_PULLUP);
-  }
-
-  // Initialize PWM for all LED pins
-  for (int i = 0; i < numLeds; i++) {
-    // Set initial PWM to 0 (off)
+    
+    // Initialize PWM for all LED pins
     analogWrite(ledsPlayer1[i], 0);
     analogWrite(ledsPlayer2[i], 0);
+  
+    attachPinChangeInterrupt(digitalPinToPinChangeInterrupt(buttonsPlayer1[i]), player1ISR, FALLING);
+    attachPinChangeInterrupt(digitalPinToPinChangeInterrupt(buttonsPlayer2[i]), player2ISR, FALLING);
   }
-
-  // Set up Timer1 for sequence timing
-  setupTimer();
 
   // Initialize random seed from an unconnected analog pin
   randomSeed(analogRead(A0));
-}
-
-void setupTimer() {
-  // Set up Timer1 for timing the game sequence
-  // Clear registers
-  TCCR1A = 0;
-  TCCR1B = 0;
-  TCNT1 = 0;
-  
-  // Set compare match register for 1Hz increments
-  OCR1A = 15624;  // = 16MHz / (1024 * 1Hz) - 1
-  
-  // Turn on CTC mode
-  TCCR1B |= (1 << WGM12);
-  
-  // Set CS10 and CS12 bits for 1024 prescaler
-  TCCR1B |= (1 << CS12) | (1 << CS10);
-  
-  // Enable timer compare interrupt
-  TIMSK1 |= (1 << OCIE1A);
-}
-
-// Timer1 interrupt service routine
-ISR(TIMER1_COMPA_vect) {
-  // This function will be called when Timer1 reaches the set value
-  // Can be used for sequence timing if needed
 }
 
 void loop() {
@@ -349,33 +324,50 @@ bool getPlayerInput() {
   return true;
 }
 
+void player1ISR() {
+  for (int i = 0; i < numLeds; i++) {
+    if (digitalRead(buttonsPlayer1[i]) == LOW) {
+      interruptButtonPressed = i;
+      break;
+    }
+  }
+}
+
+void player2ISR() {
+  for (int i = 0; i < numLeds; i++) {
+    if (digitalRead(buttonsPlayer2[i]) == LOW) {
+      interruptButtonPressed = i;
+      break;
+    }
+  }
+}
+
 int waitForChoice() {
   const int* buttons = (currentPlayer == 1) ? buttonsPlayer1 : buttonsPlayer2;
-  
-  // Set up a timeout (10 seconds to make a choice)
+  interruptButtonPressed = -1;
   unsigned long startTime = millis();
   unsigned long timeout = 10000;  // 10 seconds
-  
+
+  Serial.println("Waiting for player input...");
+
   while (millis() - startTime < timeout) {
-    // Check each button
-    for (int i = 0; i < numLeds; i++) {
-      if (digitalRead(buttons[i]) == LOW) {  // Button is pressed (LOW because of pull-up)
-        Serial.print("Button ");
-        Serial.print(i);
-        Serial.println(" pressed");
-        
-        // Wait for button release to prevent multiple reads
-        while (digitalRead(buttons[i]) == LOW) {
-          delay(10);
-        }
-        
-        return i;
+    if (interruptButtonPressed != -1) {
+      int pressed = interruptButtonPressed;
+      interruptButtonPressed = -1;
+
+      Serial.print("Button ");
+      Serial.print(pressed);
+      Serial.println(" pressed");
+
+      // Wait for button release (debounce)
+      while (digitalRead(buttons[pressed]) == LOW) {
+        delay(5);
       }
+
+      return pressed;
     }
-    delay(10);  // Small delay to prevent CPU hogging
   }
-  
-  // If we get here, there was a timeout
+
   Serial.println("Input timeout!");
   return -1;
 }
